@@ -1,6 +1,5 @@
 import os, re, sqlparse, yaml, time
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
 import oracledb
@@ -19,8 +18,7 @@ with open("/opt/safeproxy/policy.yml", "r") as f:
 app = FastAPI(title="Safe Query Engine", version="2.0")
 
 # ---------------------------------------------------------------
-# RATE LIMITING (simple)
-#   max 10 requests / 5 seconds per client IP
+# RATE LIMITING
 # ---------------------------------------------------------------
 RATE_LIMIT = {}
 MAX_REQ = 10
@@ -69,21 +67,20 @@ def block_unsafe(sql_up: str):
     for cmd in POLICY.get("deny_commands", []):
         if cmd in sql_up:
             raise HTTPException(403, f"Command '{cmd}' not allowed")
-    return True
 
 def _enforce_limit(sql: str) -> str:
     conf = POLICY.get("enforce_limit", {"enabled": True, "rows": 200})
     if not conf.get("enabled", True):
         return sql
 
-    # elimină orice semicolon de la final
+    # remove trailing semicolon
     sql_clean = re.sub(r";\s*$", "", sql.strip())
 
-    # dacă deja există un FETCH FIRST valid, nu adăuga încă unul
+    # already has FETCH FIRST
     if re.search(r"\bFETCH\s+FIRST\s+\d+\s+ROWS\s+ONLY\b", sql_clean, flags=re.IGNORECASE):
         return sql_clean
 
-    # adaugă limita
+    # append Oracle 12c+ limit
     return f"{sql_clean} FETCH FIRST {int(conf.get('rows',200))} ROWS ONLY"
 
 def mask_row(row, cols):
@@ -116,7 +113,7 @@ def health():
     return {"ok": True}
 
 # ---------------------------------------------------------------
-# EXPLAIN SQL (no execution)
+# EXPLAIN SQL (NO EXECUTION)
 # ---------------------------------------------------------------
 @app.post("/explain_sql")
 def explain_sql(q: Query, request: Request):
@@ -126,7 +123,6 @@ def explain_sql(q: Query, request: Request):
     if not sql:
         raise HTTPException(400, "Empty SQL")
 
-    parsed = sqlparse.parse(sql)
     formatted = sqlparse.format(sql, keyword_case="upper", strip_comments=True)
     tokens = [t.value for t in sqlparse.parse(sql)[0].tokens]
 
@@ -142,7 +138,7 @@ def explain_sql(q: Query, request: Request):
     }
 
 # ---------------------------------------------------------------
-# VALIDATE SQL (no execution)
+# VALIDATE SQL
 # ---------------------------------------------------------------
 @app.post("/validate_sql")
 def validate_sql(q: Query, request: Request):
@@ -156,12 +152,9 @@ def validate_sql(q: Query, request: Request):
     fmt = sqlparse.format(sql, keyword_case="upper", strip_comments=True)
     up = fmt.upper()
 
-    # apply policy
     block_unsafe(up)
     block_star(up)
 
-    # allow-list table check (optional)
-    allowed_tables = set(POLICY["allowed_tables"])
     used_tokens = [tok for tok in re.findall(r"\b[A-Z_][A-Z0-9_]*\b", up)]
     bad = [t for t in used_tokens if t in POLICY.get("deny_tables", [])]
 
@@ -183,14 +176,18 @@ def safe_query(q: Query, request: Request):
     if not sql:
         raise HTTPException(400, "Empty SQL")
 
+    # remove trailing semicolon early
+    sql = re.sub(r";\s*$", "", sql)
+
     fmt = sqlparse.format(sql, keyword_case="upper", strip_comments=True)
     up = fmt.upper()
 
-    # apply firewall rules
     block_unsafe(up)
     block_star(up)
-    sql_exec = _enforce_limit(sql_fmt)
-    
+
+    # FIX: correct variable name
+    sql_exec = _enforce_limit(fmt)
+
     try:
         with conn() as c:
             with c.cursor() as cur:
@@ -209,5 +206,6 @@ def safe_query(q: Query, request: Request):
                     "row_count": len(masked),
                     "executed_sql": sql_exec
                 }
+
     except Exception as e:
         raise HTTPException(400, f"Execution error: {e}")
