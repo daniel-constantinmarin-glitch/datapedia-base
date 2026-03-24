@@ -1,0 +1,43 @@
+read_only: true
+deny_commands:
+  - DELETE
+  - UPDATE
+  - INSERT
+  - MERGE
+  - DROP
+  - TRUNCATE
+  - ALTER
+block_select_all: true
+enforce_limit:
+  enabled: true
+  rows: 200
+allowed_schemas:
+  - BANK
+allowed_tables:  
+  - ACCOUNTS
+  - CUSTOMERS
+  - ADDRESSES
+  - CUSTOMER_ADDRESSES
+  - TRANSACTIONS
+  - CARDS
+  - CARD_TRANSACTIONS
+  - LOANS
+  - LOAN_PAYMENTS
+  - BRANCHES
+  - EMPLOYEES
+  - MERCHANTS
+  - ACCOUNT_TYPES
+  - TRANSACTION_TYPES
+  - CURRENCIES
+  - EXCHANGE_RATES
+  - FEES
+pii_columns:     # hidden columns
+  - EMAIL
+  - PHONE
+  - NATIONAL_ID
+  - CARD_NUMBER
+  - FIRST_NAME
+  - LAST_NAME
+  - NAME         
+  - IBAN
+  - ACCOUNT_NUMBER
