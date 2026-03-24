@@ -71,13 +71,20 @@ def block_unsafe(sql_up: str):
             raise HTTPException(403, f"Command '{cmd}' not allowed")
     return True
 
-def enforce_limit(sql: str):
-    conf = POLICY["enforce_limit"]
-    if not conf["enabled"]:
+def _enforce_limit(sql: str) -> str:
+    conf = POLICY.get("enforce_limit", {"enabled": True, "rows": 200})
+    if not conf.get("enabled", True):
         return sql
-    if re.search(r"\bFETCH\s+FIRST\s+\d+\s+ROWS", sql, flags=re.IGNORECASE):
-        return sql
-    return sql.rstrip(";") + f" FETCH FIRST {conf['rows']} ROWS ONLY"
+
+    # elimină orice semicolon de la final
+    sql_clean = re.sub(r";\s*$", "", sql.strip())
+
+    # dacă deja există un FETCH FIRST valid, nu adăuga încă unul
+    if re.search(r"\bFETCH\s+FIRST\s+\d+\s+ROWS\s+ONLY\b", sql_clean, flags=re.IGNORECASE):
+        return sql_clean
+
+    # adaugă limita
+    return f"{sql_clean} FETCH FIRST {int(conf.get('rows',200))} ROWS ONLY"
 
 def mask_row(row, cols):
     pii = set([c.upper() for c in POLICY["pii_columns"]])
@@ -142,6 +149,7 @@ def validate_sql(q: Query, request: Request):
     rate_limit(request)
 
     sql = q.sql.strip()
+    sql = re.sub(r";\s*$", "", sql)
     if not sql:
         raise HTTPException(400, "Empty SQL")
 
