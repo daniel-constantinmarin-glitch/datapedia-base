@@ -189,8 +189,8 @@ def safe_query(q: Query, request: Request):
     # apply firewall rules
     block_unsafe(up)
     block_star(up)
-    sql_exec = enforce_limit(fmt)
-
+    sql_exec = _enforce_limit(sql_fmt)
+    
     try:
         with conn() as c:
             with c.cursor() as cur:
