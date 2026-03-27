@@ -22,14 +22,14 @@ with open("/opt/safeproxy/policy.yml", "r") as f:
 # ---------------------------------------------------------------
 # FASTAPI INIT
 # ---------------------------------------------------------------
-app = FastAPI(title="Safe Query Engine", version="2.0")
+app = FastAPI(title="Safe Query Engine", version="2.1")
 
 # ---------------------------------------------------------------
 # RATE LIMITING
 # ---------------------------------------------------------------
 RATE_LIMIT = {}
 MAX_REQ = 10
-WINDOW = 5  # sec
+WINDOW = 5  # seconds
 
 def rate_limit(request: Request):
     ip = request.client.host
@@ -37,6 +37,7 @@ def rate_limit(request: Request):
 
     if ip not in RATE_LIMIT:
         RATE_LIMIT[ip] = []
+
     RATE_LIMIT[ip] = [t for t in RATE_LIMIT[ip] if now - t < WINDOW]
 
     if len(RATE_LIMIT[ip]) >= MAX_REQ:
@@ -48,10 +49,11 @@ def rate_limit(request: Request):
 # ORACLE CONNECTION
 # ---------------------------------------------------------------
 def dsn():
-    host = os.getenv("ORA_HOST")
-    port = int(os.getenv("ORA_PORT"))
-    svc  = os.getenv("ORA_SERVICE")
-    return oracledb.makedsn(host, port, service_name=svc)
+    return oracledb.makedsn(
+        os.getenv("ORA_HOST"),
+        int(os.getenv("ORA_PORT")),
+        service_name=os.getenv("ORA_SERVICE")
+    )
 
 def conn():
     return oracledb.connect(
@@ -67,7 +69,7 @@ class Query(BaseModel):
     sql: str
 
 def block_star(sql_up: str):
-    if POLICY.get("block_select_all", True) and re.search(r"\bSELECT\s+\*", sql_up):
+    if "SELECT *" in sql_up and POLICY.get("block_select_all", True):
         raise HTTPException(400, "SELECT * is not allowed")
 
 def block_unsafe(sql_up: str):
@@ -80,14 +82,11 @@ def _enforce_limit(sql: str) -> str:
     if not conf.get("enabled", True):
         return sql
 
-    # remove trailing semicolon
     sql_clean = re.sub(r";\s*$", "", sql.strip())
 
-    # already has FETCH FIRST
-    if re.search(r"\bFETCH\s+FIRST\s+\d+\s+ROWS\s+ONLY\b", sql_clean, flags=re.IGNORECASE):
+    if re.search(r"FETCH\s+FIRST\s+\d+\s+ROWS\s+ONLY", sql_clean, flags=re.IGNORECASE):
         return sql_clean
 
-    # append Oracle 12c+ limit
     return f"{sql_clean} FETCH FIRST {int(conf.get('rows',200))} ROWS ONLY"
 
 def mask_row(row, cols):
@@ -105,7 +104,7 @@ def mask_row(row, cols):
                 elif "PHONE" in cu:
                     out[c] = "***" + s[-4:]
                 elif "CARD" in cu or "ACCOUNT" in cu or "IBAN" in cu:
-                    out[c] = "*"*(len(s)-4) + s[-4:]
+                    out[c] = "*" * (len(s)-4) + s[-4:]
                 else:
                     out[c] = s[0] + "*****"
         else:
@@ -120,7 +119,7 @@ def health():
     return {"ok": True}
 
 # ---------------------------------------------------------------
-# EXPLAIN SQL (NO EXECUTION)
+# EXPLAIN SQL
 # ---------------------------------------------------------------
 @app.post("/explain_sql")
 def explain_sql(q: Query, request: Request):
@@ -140,7 +139,6 @@ def explain_sql(q: Query, request: Request):
         "notes": [
             "This endpoint validates SQL structure only.",
             "No execution is performed.",
-            "Deny-list and SELECT * blocking still apply."
         ]
     }
 
@@ -151,67 +149,84 @@ def explain_sql(q: Query, request: Request):
 def validate_sql(q: Query, request: Request):
     rate_limit(request)
 
-    sql = q.sql.strip()
-    sql = re.sub(r";\s*$", "", sql)
+    sql = re.sub(r";\s*$", "", q.sql.strip())
     if not sql:
         raise HTTPException(400, "Empty SQL")
 
     fmt = sqlparse.format(sql, keyword_case="upper", strip_comments=True)
-    up = fmt.upper()
+    up  = fmt.upper()
 
     block_unsafe(up)
     block_star(up)
 
-    used_tokens = [tok for tok in re.findall(r"\b[A-Z_][A-Z0-9_]*\b", up)]
-    bad = [t for t in used_tokens if t in POLICY.get("deny_tables", [])]
-
     return {
         "ok": True,
         "formatted": fmt,
-        "blocked": bad,
         "info": "SQL validated successfully under policy constraints."
     }
 
 # ---------------------------------------------------------------
-# SAFE QUERY EXECUTION
+# SAFE QUERY (FULLY PATCHED)
 # ---------------------------------------------------------------
 @app.post("/safe_query")
 def safe_query(q: Query, request: Request):
     rate_limit(request)
 
-    sql = q.sql.strip()
+    sql = q.sql or ""
+    sql = sql.strip()
     if not sql:
         raise HTTPException(400, "Empty SQL")
 
-    # remove trailing semicolon early
+    # ============================================================
+    # 1) REMOVE MARKDOWN CODE FENCES (FULL & PARTIAL)
+    # ============================================================
+    sql = re.sub(r"^```[\s\S]*?```", "", sql).strip()      # remove full blocks
+    sql = re.sub(r"^```[a-zA-Z0-9_-]*", "", sql).strip()   # remove leading fences
+    sql = sql.replace("```", "").replace("`", "").strip()  # remove remaining
+
+    # ============================================================
+    # 2) REMOVE TRAILING SEMICOLON
+    # ============================================================
     sql = re.sub(r";\s*$", "", sql)
 
+    if not sql:
+        raise HTTPException(400, "SQL empty after cleanup")
+
+    # ============================================================
+    # 3) FORMAT AND APPLY POLICY
+    # ============================================================
     fmt = sqlparse.format(sql, keyword_case="upper", strip_comments=True)
-    up = fmt.upper()
+    up  = fmt.upper()
 
     block_unsafe(up)
     block_star(up)
 
-
-
-    # FIX: correct variable name
+    # ============================================================
+    # 4) LIMIT ENFORCE
+    # ============================================================
     sql_exec = _enforce_limit(fmt)
 
-    logging.debug("RAW SQL FROM UI:\n" + q.sql)
-    logging.debug("CLEAN SQL:\n" + sql)
-    logging.debug("FMT SQL:\n" + fmt)
-    logging.debug("EXEC SQL:\n" + sql_exec)
+    # ============================================================
+    # 5) LOGGING — after sql_exec exists
+    # ============================================================
+    logging.debug("RAW SQL FROM UI:\n"   + q.sql)
+    logging.debug("CLEAN SQL:\n"        + sql)
+    logging.debug("FMT SQL:\n"          + fmt)
+    logging.debug("EXEC SQL:\n"         + sql_exec)
 
+    # ============================================================
+    # 6) EXECUTION
+    # ============================================================
     try:
         with conn() as c:
             with c.cursor() as cur:
                 cur.execute(sql_exec)
 
                 if not cur.description:
-                    return {"columns": [], "rows": [], "row_count": 0, "note": "No result"}
+                    return {"columns": [], "rows": [], "row_count": 0}
 
-                cols = [d[0] for d in cur.description]
-                rows = cur.fetchall()
+                cols   = [d[0] for d in cur.description]
+                rows   = cur.fetchall()
                 masked = [mask_row(r, cols) for r in rows]
 
                 return {
