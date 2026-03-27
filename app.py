@@ -4,6 +4,13 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 import oracledb
 
+import logging
+logging.basicConfig(
+    filename="/opt/safeproxy/firewall.log",
+    level=logging.DEBUG,
+    format="%(asctime)s [%(levelname)s] %(message)s"
+)
+
 # ---------------------------------------------------------------
 # LOAD CONFIG & POLICY
 # ---------------------------------------------------------------
@@ -184,6 +191,11 @@ def safe_query(q: Query, request: Request):
 
     block_unsafe(up)
     block_star(up)
+
+    logging.debug("RAW SQL FROM UI:\n" + q.sql)
+    logging.debug("CLEAN SQL:\n" + sql)
+    logging.debug("FMT SQL:\n" + fmt)
+    logging.debug("EXEC SQL:\n" + sql_exec)
 
     # FIX: correct variable name
     sql_exec = _enforce_limit(fmt)
