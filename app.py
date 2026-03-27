@@ -192,13 +192,15 @@ def safe_query(q: Query, request: Request):
     block_unsafe(up)
     block_star(up)
 
+
+
+    # FIX: correct variable name
+    sql_exec = _enforce_limit(fmt)
+
     logging.debug("RAW SQL FROM UI:\n" + q.sql)
     logging.debug("CLEAN SQL:\n" + sql)
     logging.debug("FMT SQL:\n" + fmt)
     logging.debug("EXEC SQL:\n" + sql_exec)
-
-    # FIX: correct variable name
-    sql_exec = _enforce_limit(fmt)
 
     try:
         with conn() as c:
