@@ -22,7 +22,7 @@ with open("/opt/safeproxy/policy.yml", "r") as f:
 # ---------------------------------------------------------------
 # FASTAPI INIT
 # ---------------------------------------------------------------
-app = FastAPI(title="Safe Query Engine", version="2.1")
+app = FastAPI(title="Safe Query Engine", version="3.0-clean")
 
 # ---------------------------------------------------------------
 # RATE LIMITING
@@ -162,11 +162,11 @@ def validate_sql(q: Query, request: Request):
     return {
         "ok": True,
         "formatted": fmt,
-        "info": "SQL validated successfully under policy constraints."
+        "info": "SQL validated successfully."
     }
 
 # ---------------------------------------------------------------
-# SAFE QUERY (FULLY PATCHED)
+# SAFE QUERY (CLEAN MODE — 100% CODE-FENCES REMOVAL)
 # ---------------------------------------------------------------
 @app.post("/safe_query")
 def safe_query(q: Query, request: Request):
@@ -178,11 +178,20 @@ def safe_query(q: Query, request: Request):
         raise HTTPException(400, "Empty SQL")
 
     # ============================================================
-    # 1) REMOVE MARKDOWN CODE FENCES (FULL & PARTIAL)
+    # 1) REMOVE ALL MARKDOWN CODE FENCES
     # ============================================================
-    sql = re.sub(r"^```[\s\S]*?```", "", sql).strip()      # remove full blocks
-    sql = re.sub(r"^```[a-zA-Z0-9_-]*", "", sql).strip()   # remove leading fences
-    sql = sql.replace("```", "").replace("`", "").strip()  # remove remaining
+
+    # remove blocks like ```sql … ```
+    sql = re.sub(r"^```[\s\S]*?```", "", sql).strip()
+
+    # remove leading ```sql or ```foo
+    sql = re.sub(r"^```[a-zA-Z0-9_-]*", "", sql).strip()
+
+    # remove ANY remaining ``` on any line
+    sql = sql.replace("```", "")
+
+    # remove single backticks
+    sql = sql.replace("`", "")
 
     # ============================================================
     # 2) REMOVE TRAILING SEMICOLON
@@ -207,7 +216,7 @@ def safe_query(q: Query, request: Request):
     sql_exec = _enforce_limit(fmt)
 
     # ============================================================
-    # 5) LOGGING — after sql_exec exists
+    # 5) LOGGING — final values
     # ============================================================
     logging.debug("RAW SQL FROM UI:\n"   + q.sql)
     logging.debug("CLEAN SQL:\n"        + sql)
